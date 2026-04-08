@@ -34,6 +34,7 @@ RUN apt-get update && apt-get install -y \
     libxss1 \
     libxtst6 \
     xdg-utils \
+    xvfb \
     --no-install-recommends && \
     wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - && \
     sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list' && \
@@ -49,5 +50,6 @@ RUN npm install --omit=dev
 COPY . .
 
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
+ENV DISPLAY=:99
 
-CMD ["node", "index.js"]
+CMD Xvfb :99 -screen 0 1920x1080x24 & node index.js
