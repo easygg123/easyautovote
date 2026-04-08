@@ -1,133 +1,72 @@
-const packageJson = require("./package.json");
-const cp = require("child_process");
-const path = require("path");
-const fse = require("fs-extra");
-
-for (let dep of Object.keys(packageJson.dependencies)) {
-    try { require.resolve(dep); }
-    catch (err) { console.log("Installing..."); cp.execSync(`npm i`); }
-}
-
-const { connect } = require("puppeteer-real-browser");
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const adblockcachedir = path.resolve(__dirname, "./adblockcache");
-if (!fse.existsSync(adblockcachedir)) fse.mkdirSync(adblockcachedir, { recursive: true });
+const https = require("https");
 
 const token = process.env.TOKEN;
 const botid = process.env.BOT_ID;
-if (!token || !botid) { console.error("Faltan TOKEN o BOT_ID"); process.exit(1); }
 
-async function waitForCloudflare(page, maxWait = 30000) {
-    const start = Date.now();
-    while (Date.now() - start < maxWait) {
-        const text = await page.evaluate(() => document.body.innerText).catch(() => "");
-        if (text.includes("Performing security verification") || text.includes("Verifying you are human")) {
-            console.log("Cloudflare verificando... esperando...");
-            await delay(3000);
-        } else {
-            console.log("Cloudflare superado.");
-            return true;
-        }
-    }
-    console.log("Timeout esperando Cloudflare.");
-    return false;
+if (!token || !botid) {
+    console.error("Faltan variables TOKEN o BOT_ID");
+    process.exit(1);
+}
+
+console.log("Bot ID:", botid);
+
+function request(options, body = null) {
+    return new Promise((resolve, reject) => {
+        const req = https.request(options, (res) => {
+            let data = "";
+            res.on("data", (c) => (data += c));
+            res.on("end", () => resolve({ status: res.statusCode, body: data, headers: res.headers }));
+        });
+        req.on("error", reject);
+        if (body) req.write(body);
+        req.end();
+    });
 }
 
 (async () => {
-    console.log("Iniciando votador top.gg... Bot ID:", botid);
+    // Intentar votar directamente via API de top.gg
+    const voteEndpoint = `/api/bots/${botid}/vote`;
+    console.log("Intentando votar via API:", voteEndpoint);
 
-    const { browser, page } = await connect({
-        headless: false,   // false + Xvfb para evitar detección de Cloudflare
-        turnstile: true,
-        args: [
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-dev-shm-usage",
-            "--window-size=1920,1080",
-            "--display=:99",
-        ],
-        plugins: [
-            require("puppeteer-extra-plugin-adblocker")({
-                blockTrackers: true,
-                useCache: true,
-                cacheDir: adblockcachedir,
-            }),
-        ],
-    });
+    const res = await request({
+        hostname: "top.gg",
+        path: voteEndpoint,
+        method: "POST",
+        headers: {
+            "Authorization": token,
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Origin": "https://top.gg",
+            "Referer": `https://top.gg/bot/${botid}/vote`,
+        },
+    }, "{}");
 
-    await page.setViewport({ width: 1920, height: 1080 });
-    await page.evaluateOnNewDocument((t) => {
-        window.localStorage.setItem("token", JSON.stringify(t));
-    }, token);
+    console.log("Respuesta status:", res.status);
+    console.log("Respuesta body:", res.body);
 
-    console.log("Cargando top.gg...");
-    await page.goto("https://top.gg", { waitUntil: "networkidle2", timeout: 60000 });
-    await delay(5000);
-
-    const passed = await waitForCloudflare(page, 45000);
-    if (!passed) {
-        console.log("No se pudo pasar Cloudflare en top.gg.");
-        await browser.close();
+    if (res.status === 200 || res.status === 204) {
+        console.log("¡Voto enviado exitosamente!");
+        process.exit(0);
+    } else if (res.status === 401) {
+        console.log("Token inválido o expirado.");
+        process.exit(1);
+    } else if (res.status === 429) {
+        console.log("Ya votaste recientemente (rate limit). Intenta más tarde.");
+        process.exit(0);
+    } else {
+        // Intentar con GET para ver el estado
+        console.log("POST falló, comprobando estado con GET...");
+        const checkRes = await request({
+            hostname: "top.gg",
+            path: `/api/bots/${botid}`,
+            method: "GET",
+            headers: {
+                "Authorization": token,
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            },
+        });
+        console.log("GET status:", checkRes.status);
+        console.log("GET body:", checkRes.body.substring(0, 500));
         process.exit(1);
     }
-
-    const homeText = await page.evaluate(() => document.body.innerText.substring(0, 200));
-    const isLoggedIn = !homeText.toLowerCase().includes("login");
-    console.log("Logueado:", isLoggedIn);
-
-    if (!isLoggedIn) {
-        await page.evaluate(() => {
-            const el = [...document.querySelectorAll("button,a")].find(e => e.innerText && e.innerText.trim().toLowerCase().includes("login"));
-            if (el) el.click();
-        });
-        await delay(5000);
-        try { await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 10000 }); } catch (_) {}
-        if (page.url().includes("discord.com")) {
-            await page.evaluate(() => {
-                const btn = [...document.querySelectorAll("button")].find(b => b.innerText && b.innerText.toLowerCase().includes("authoriz"));
-                if (btn) btn.click();
-            });
-            await delay(5000);
-            try { await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 15000 }); } catch (_) {}
-        }
-    }
-
-    const voteUrl = `https://top.gg/bot/${botid}/vote`;
-    console.log("Cargando página de voto:", voteUrl);
-    await page.goto(voteUrl, { waitUntil: "networkidle2", timeout: 60000 });
-    await delay(5000);
-
-    await waitForCloudflare(page, 45000);
-
-    const voteText = await page.evaluate(() => document.body.innerText.substring(0, 500));
-    console.log("Texto página voto:", voteText);
-
-    const buttons = await page.evaluate(() =>
-        [...document.querySelectorAll("button")].map(b => b.innerText.trim()).filter(t => t)
-    );
-    console.log("Botones:", JSON.stringify(buttons));
-
-    if (voteText.includes("You have already voted")) {
-        console.log("Ya votaste hoy.");
-        await browser.close();
-        process.exit(0);
-    }
-
-    if (voteText.includes("You can vote now!") || buttons.some(b => b.toLowerCase().includes("vote"))) {
-        console.log("Votando...");
-        await page.evaluate(() => {
-            const btn = [...document.querySelectorAll("button")].find(b =>
-                b.innerText && b.innerText.toLowerCase().includes("vote") && !b.disabled
-            );
-            if (btn) btn.click();
-        });
-        await delay(5000);
-        console.log("¡Voto enviado!");
-    } else {
-        console.log("Estado desconocido de la página de voto. Texto:", voteText.substring(0, 200));
-    }
-
-    await browser.close();
-    process.exit(0);
 })();
