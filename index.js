@@ -18,44 +18,74 @@ const token = process.env.TOKEN;
 const botid = process.env.BOT_ID;
 if (!token || !botid) { console.error("Faltan TOKEN o BOT_ID"); process.exit(1); }
 
+async function waitForCloudflare(page, maxWait = 30000) {
+    const start = Date.now();
+    while (Date.now() - start < maxWait) {
+        const text = await page.evaluate(() => document.body.innerText).catch(() => "");
+        if (text.includes("Performing security verification") || text.includes("Verifying you are human")) {
+            console.log("Cloudflare verificando... esperando...");
+            await delay(3000);
+        } else {
+            console.log("Cloudflare superado.");
+            return true;
+        }
+    }
+    console.log("Timeout esperando Cloudflare.");
+    return false;
+}
+
 (async () => {
-    console.log("Iniciando... Bot ID:", botid);
+    console.log("Iniciando votador top.gg... Bot ID:", botid);
 
     const { browser, page } = await connect({
-        headless: true,
+        headless: false,   // false + Xvfb para evitar detección de Cloudflare
         turnstile: true,
-        args: ["--no-sandbox","--disable-setuid-sandbox","--disable-dev-shm-usage","--disable-gpu","--window-size=1920,1080"],
-        plugins: [require("puppeteer-extra-plugin-adblocker")({ blockTrackers: true, useCache: true, cacheDir: adblockcachedir })],
+        args: [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--window-size=1920,1080",
+            "--display=:99",
+        ],
+        plugins: [
+            require("puppeteer-extra-plugin-adblocker")({
+                blockTrackers: true,
+                useCache: true,
+                cacheDir: adblockcachedir,
+            }),
+        ],
     });
 
     await page.setViewport({ width: 1920, height: 1080 });
-    await page.evaluateOnNewDocument((t) => { window.localStorage.setItem("token", JSON.stringify(t)); }, token);
+    await page.evaluateOnNewDocument((t) => {
+        window.localStorage.setItem("token", JSON.stringify(t));
+    }, token);
 
     console.log("Cargando top.gg...");
     await page.goto("https://top.gg", { waitUntil: "networkidle2", timeout: 60000 });
-    await delay(3000);
+    await delay(5000);
 
-    const homeText = await page.evaluate(() => document.body.innerText.substring(0, 300));
-    console.log("Texto home:", homeText);
+    const passed = await waitForCloudflare(page, 45000);
+    if (!passed) {
+        console.log("No se pudo pasar Cloudflare en top.gg.");
+        await browser.close();
+        process.exit(1);
+    }
 
+    const homeText = await page.evaluate(() => document.body.innerText.substring(0, 200));
     const isLoggedIn = !homeText.toLowerCase().includes("login");
     console.log("Logueado:", isLoggedIn);
 
     if (!isLoggedIn) {
-        console.log("Intentando login manual...");
         await page.evaluate(() => {
-            const els = [...document.querySelectorAll("button, a")];
-            const el = els.find(el => el.innerText && el.innerText.trim().toLowerCase().includes("login"));
+            const el = [...document.querySelectorAll("button,a")].find(e => e.innerText && e.innerText.trim().toLowerCase().includes("login"));
             if (el) el.click();
         });
         await delay(5000);
         try { await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 10000 }); } catch (_) {}
-        const url = page.url();
-        console.log("URL tras login:", url);
-        if (url.includes("discord.com")) {
+        if (page.url().includes("discord.com")) {
             await page.evaluate(() => {
-                const btns = [...document.querySelectorAll("button")];
-                const btn = btns.find(b => b.innerText && b.innerText.toLowerCase().includes("authoriz"));
+                const btn = [...document.querySelectorAll("button")].find(b => b.innerText && b.innerText.toLowerCase().includes("authoriz"));
                 if (btn) btn.click();
             });
             await delay(5000);
@@ -64,20 +94,39 @@ if (!token || !botid) { console.error("Faltan TOKEN o BOT_ID"); process.exit(1);
     }
 
     const voteUrl = `https://top.gg/bot/${botid}/vote`;
-    console.log("Cargando página de voto...");
+    console.log("Cargando página de voto:", voteUrl);
     await page.goto(voteUrl, { waitUntil: "networkidle2", timeout: 60000 });
     await delay(5000);
 
-    const votePageText = await page.evaluate(() => document.body.innerText.substring(0, 1000));
-    console.log("=== TEXTO DE PÁGINA DE VOTO ===");
-    console.log(votePageText);
-    console.log("=== FIN TEXTO ===");
+    await waitForCloudflare(page, 45000);
 
-    // Buscar cualquier botón visible
-    const buttons = await page.evaluate(() => {
-        return [...document.querySelectorAll("button")].map(b => b.innerText.trim()).filter(t => t.length > 0);
-    });
-    console.log("Botones en página:", JSON.stringify(buttons));
+    const voteText = await page.evaluate(() => document.body.innerText.substring(0, 500));
+    console.log("Texto página voto:", voteText);
+
+    const buttons = await page.evaluate(() =>
+        [...document.querySelectorAll("button")].map(b => b.innerText.trim()).filter(t => t)
+    );
+    console.log("Botones:", JSON.stringify(buttons));
+
+    if (voteText.includes("You have already voted")) {
+        console.log("Ya votaste hoy.");
+        await browser.close();
+        process.exit(0);
+    }
+
+    if (voteText.includes("You can vote now!") || buttons.some(b => b.toLowerCase().includes("vote"))) {
+        console.log("Votando...");
+        await page.evaluate(() => {
+            const btn = [...document.querySelectorAll("button")].find(b =>
+                b.innerText && b.innerText.toLowerCase().includes("vote") && !b.disabled
+            );
+            if (btn) btn.click();
+        });
+        await delay(5000);
+        console.log("¡Voto enviado!");
+    } else {
+        console.log("Estado desconocido de la página de voto. Texto:", voteText.substring(0, 200));
+    }
 
     await browser.close();
     process.exit(0);
