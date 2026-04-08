@@ -5,131 +5,110 @@
  * For more information, see README.md and LICENSE
  */
 
-/*
- * autovoter for top.gg
- */
-
-const packageJson = require("./package.json");
-const cp = require("child_process");
-const path = require("path");
-const fse = require("fs-extra");
+const packageJson = require('./package.json');
+const cp = require('child_process');
+const path = require('path');
+const fse = require('fs-extra');
 
 for (let dep of Object.keys(packageJson.dependencies)) {
     try {
         require.resolve(dep);
     } catch (err) {
-        console.log("Installing dependencies...");
-        cp.execSync(`npm i`);
+        console.log('Installing dependencies...');
+        cp.execSync('npm i');
     }
 }
 
-const { connect } = require("puppeteer-real-browser");
-const yargs = require("yargs");
-const argv = yargs.options({
-    token: {
-        alias: "t",
-        describe: "User token",
-        type: "string",
-        demandOption: true,
-    },
-    botid: {
-        alias: "bid",
-        describe: "Id of the bot to vote for",
-        type: "string",
-        demandOption: true,
-    },
-}).argv;
+const { connect } = require('puppeteer-real-browser');
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const adblockcachedir = path.resolve(__dirname, "./adblockcache");
+const adblockcachedir = path.resolve(__dirname, './adblockcache');
 
 if (!fse.existsSync(adblockcachedir)) {
     fse.mkdirSync(adblockcachedir, { recursive: true });
 }
 
+const token = process.env.TOKEN;
+const botid = process.env.BOT_ID;
+
+if (!token || !botid) {
+    console.error('Error: Se requieren las variables de entorno TOKEN y BOT_ID');
+    process.exit(1);
+}
+
 (async () => {
-    const topcici = "https://top.gg";
-    const { token, botid } = argv;
+    const topcici = 'https://top.gg';
 
     const { browser, page } = await connect({
-        headless: false,
+        headless: true,
         turnstile: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+        ],
         plugins: [
-            require("puppeteer-extra-plugin-adblocker")({
+            require('puppeteer-extra-plugin-adblocker')({
                 blockTrackers: true,
                 useCache: true,
                 cacheDir: adblockcachedir,
             }),
         ],
     });
-    await page.setViewport({
-        width: 1920,
-        height: 1080,
-    });
+    await page.setViewport({ width: 1920, height: 1080 });
 
     await page.evaluateOnNewDocument((token) => {
-        window.localStorage.setItem("token", `"${token}"`);
+        window.localStorage.setItem('token', JSON.stringify(token));
     }, token);
 
-    await page.goto(topcici, { waitUntil: "load" });
-    await page.waitForSelector(".chakra-button.css-7rul47", { visible: true });
-    await page.locator(".chakra-button.css-7rul47").setTimeout(3000).click();
+    await page.goto(topcici, { waitUntil: 'load' });
+    await page.waitForSelector('.chakra-button.css-7rul47', { visible: true });
+    await page.locator('.chakra-button.css-7rul47').setTimeout(3000).click();
 
-    // Discord auth
-    await page.waitForNavigation({ waitUntil: "load" });
-    await page.waitForSelector("div.action__3d3b0 button", { visible: true });
-    await page.locator("div.action__3d3b0 button").setTimeout(3000).click();
+    await page.waitForNavigation({ waitUntil: 'load' });
+    await page.waitForSelector('div.action__3d3b0 button', { visible: true });
+    await page.locator('div.action__3d3b0 button').setTimeout(3000).click();
 
-    await page.waitForNavigation({ waitUntil: "load" });
-
+    await page.waitForNavigation({ waitUntil: 'load' });
     await delay(5000);
+
     const isLoggedIn = await page.evaluate(() => {
-        return !document.body.innerText.includes("Login");
+        return !document.body.innerText.includes('Login');
     });
 
     if (isLoggedIn) {
-        let topgglink = `https://top.gg/bot/${botid}/vote`;
-        await page.goto(topgglink, { waitUntil: "load" });
+        let topgglink = 'https://top.gg/bot/' + botid + '/vote';
+        await page.goto(topgglink, { waitUntil: 'load' });
 
         while (true) {
             const isAlreadyVoted = await page.evaluate(() => {
-                return document.body.innerText.includes(
-                    "You have already voted",
-                );
+                return document.body.innerText.includes('You have already voted');
             });
-
             const isvoteable = await page.evaluate(() => {
-                return document.body.innerText.includes("You can vote now!");
+                return document.body.innerText.includes('You can vote now!');
             });
 
             if (isAlreadyVoted) {
-                console.log("You have already voted. Exiting...");
+                console.log('You have already voted. Exiting...');
                 await browser.close();
                 process.exit(0);
             }
-            if (isvoteable) {
-                break;
-            } else {
-                await delay(2500);
-            }
+            if (isvoteable) break;
+            else await delay(2500);
         }
 
         await page.evaluate(() => {
-            const button = document.querySelector(
-                "div.css-1yn6pjb button.chakra-button.css-7rul47",
-            );
-
-            if (!button || button.disabled) {
-                return;
-            }
-
+            const button = document.querySelector('div.css-1yn6pjb button.chakra-button.css-7rul47');
+            if (!button || button.disabled) return;
             button.click();
         });
 
         await delay(5000);
+        console.log('Vote submitted successfully!');
     } else {
-        console.log("Authorization failed.");
+        console.log('Authorization failed.');
     }
 
     await browser.close();
