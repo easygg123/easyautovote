@@ -1,0 +1,29 @@
+name: Auto Vote Karuta top.gg
+
+on:
+  schedule:
+    - cron: "0 */12 * * *"
+  workflow_dispatch:
+
+jobs:
+  vote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm install
+      - name: Install Chrome and Xvfb
+        run: sudo apt-get update && sudo apt-get install -y google-chrome-stable xvfb --no-install-recommends
+      - name: Vote
+        env:
+          TOKEN: ${{ secrets.TOKEN }}
+          BOT_ID: ${{ secrets.BOT_ID }}
+          DISPLAY: ":99"
+        run: |
+          Xvfb :99 -screen 0 1920x1080x24 &
+          sleep 2
+          node index.js
